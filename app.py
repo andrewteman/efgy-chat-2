@@ -12,7 +12,7 @@ from bs4 import BeautifulSoup
 import PyPDF2
 from io import BytesIO
 import re
-from langchain.text_splitters import RecursiveCharacterTextSplitter
+from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 # Load environment variables
 load_dotenv()
