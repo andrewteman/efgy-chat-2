@@ -1,13 +1,11 @@
 import streamlit as st
 import os
-import requests
-from bs4 import BeautifulSoup
-import json
+import glob
 from openai import OpenAI
 
 # Page configuration
 st.set_page_config(
-    page_title="EF Gap Year Assistant",
+    page_title="EF Gap Year Pre-Departure Assistant 🤖",
     page_icon="🌎",
     layout="centered"
 )
@@ -52,115 +50,31 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# URLs in the proper order as provided by the user
-PROGRAM_URLS = [
-    "https://a.storyblok.com/f/234741/x/46a3c53899/socialidentityresourcesfortravelers_2-14-23.pdf",
-    "https://efgapyear.com/program-guide-the-changemaker-fall-2025-session-1/",
-    "https://efgapyear.com/program-guide-the-changemaker-fall-2025-session-2/",
-    "https://efgapyear.com/program-guide-the-changemaker-spring-2026-session-1/",
-    "https://efgapyear.com/program-guide-the-changemaker-spring-2026-session-2/",
-    "https://efgapyear.com/program-guide-the-pathfinder-fall-2025-session-1/",
-    "https://efgapyear.com/program-guide-the-pathfinder-fall-2025-session-2/",
-    "https://efgapyear.com/en/program-guide-the-pathfinder-spring-2026-session-1/",
-    "https://efgapyear.com/program-guide-the-pathfinder-spring-2026-session-2/",
-    "https://efgapyear.com/program-guide-the-voyager-fall-2025-session-1/",
-    "https://efgapyear.com/program-guide-the-voyager-fall-2025-session-2/",
-    "https://efgapyear.com/program-guide-the-voyager-spring-2026-session-1/",
-    "https://efgapyear.com/program-guide-the-voyager-spring-2026-session-2/",
-    "https://efgapyear.com/program-guide-the-year-2025-26-session-1/",
-    "https://efgapyear.com/program-guide-the-year-2025-26-session-2/",
-    "https://efgapyear.com/program-guide-the-year-2025-26-session-3/"
-]
-
-# Simplified EF Gap Year program information based on latest research
-PROGRAM_SUMMARIES = {
-    "changemaker": """
-    The Changemaker is designed for impact-driven adventurers who want to experience sustainable lifestyles and work on conservation projects.
-    - Focus: Service learning, sustainability, conservation
-    - Destinations: Costa Rica, Dominican Republic, Peru, Ecuador, Galapagos
-    - Activities: Working with locals on global challenges, exploring ecosystems, conservation projects
-    - Duration: 10-week semester program
-    - Fall 2025 Session 1: September-December 2025
-    - Fall 2025 Session 2: January-April 2026
-    - Spring 2026 Sessions also available
-    """,
-    
-    "pathfinder": """
-    The Pathfinder is perfect for hands-on learners trying to figure out their next steps in life.
-    - Focus: Career exploration, cultural immersion, academic discovery
-    - Destinations: England, France, Spain, Portugal, Germany, Switzerland, Italy
-    - Activities: Exploring international cities, cultural immersion, introduction to various academic fields
-    - Duration: 10-week semester program
-    - Fall 2025 Session 1: September-December 2025
-    - Fall 2025 Session 2: January-April 2026
-    - Spring 2026 Sessions also available
-    """,
-    
-    "voyager": """
-    The Voyager allows students to explore natural wonders and diverse cultures across multiple countries.
-    - Focus: Cultural exploration, adventure, conservation
-    - Destinations: Australia, Thailand, Japan
-    - Activities: Exploring lush environments, conservation projects, cultural immersion
-    - Duration: 10-week semester program
-    - Fall 2025 Session 1: September-December 2025
-    - Fall 2025 Session 2: January-April 2026
-    - Spring 2026 Sessions also available
-    """,
-    
-    "year": """
-    The Year Program offers a comprehensive gap year experience combining the best elements of other programs.
-    - Focus: Comprehensive experience with language, service, internship, and cultural immersion
-    - Destinations: Multiple international locations across Europe, Asia, and Latin America
-    - Duration: 23-week full academic year program
-    - 2025-2026 Academic Year: September 2025-April 2026
-    """
-}
-
-# General program information
-GENERAL_INFO = """
-All EF Gap Year programs include:
-- 24/7 support from EF staff
-- Pre-departure support with visa guidance
-- International health insurance
-- College credit options
-- Regular group activities and excursions
-- Orientation and leadership training
-- Cultural immersion experiences
-- Accommodation (varies by program: homestays, residences, hotels)
-- Some meals (varies by program)
-- Transportation between destinations
-
-Required documentation:
-- Valid passport (valid 6+ months after program end)
-- Visas (varies by destination, EF provides guidance)
-- Health documentation (varies by destination)
-
-Common concerns addressed:
-- Safety: 24/7 staff support, vetted accommodations and activities
-- Homesickness: Community-building activities, regular check-ins
-- Language barriers: No prior experience needed, staff assistance provided
-- Making friends: Orientation activities designed to foster connections
-"""
-
 # System instructions
 SYSTEM_INSTRUCTIONS = """
-You are an assistant for prospective EF Gap Year students, designed to help them prepare for their upcoming programs.
+You are a helpful assistant for prospective EF Gap Year students. Your role is to help them prepare for their 
+upcoming gap year or semester programs by providing quick, accurate, and helpful responses based on the 
+information from approved EF Gap Year resources.
 
 Guidelines:
-1. Answer ONLY questions about EF Gap Year programs using the provided information.
-2. Be kind, thorough, clear, helpful, trustworthy, and confidence-inspiring.
-3. Remember these are nervous students preparing for international travel.
-4. If you don't have an accurate answer, say: "I am not sure I can provide an accurate answer to that question. I suggest connecting with your human EF Gap Year advisor on this one."
-5. For non-EF Gap Year questions, politely respond: "My role is to help you prepare for your EF Gap Year or Semester program, so I'm afraid I cannot help with this particular question."
-6. After each response, ask ONE relevant follow-up question.
+1. ONLY answer questions about EF Gap Year programs using ONLY the information from the provided context.
+2. Your tone should be kind, thorough (but clear), helpful, trustworthy, and confidence-inspiring.
+3. Remember, these are nervous students who are about to embark on a grand trip around the world, and their nerves are high.
+4. Under NO circumstances should your responses be fabricated or misleading.
+5. If you are not confident that you have an accurate answer to a student's question, respond with:
+   "I am not sure I can provide an accurate answer to that question. I suggest connecting with your human EF Gap Year advisor on this one."
+6. If a user asks any question that is NOT about an EF Gap Year program, politely respond with:
+   "My role is to help you to prepare for your EF Gap Year or Semester program, so I am afraid I cannot help with this particular question."
+7. After each response, ask ONE relevant follow-up question to further engage the student in conversation.
+8. Your follow-up question should allow them to expand on their initial query, request more information, or ensure they're receiving necessary information.
 
-Use the following information to answer questions:
-{program_info}
+Context Information:
+{context}
 
-{general_info}
+Conversation History:
+{conversation}
 
-Student Query: {query}
-Previous Conversation: {conversation}
+Student Question: {question}
 """
 
 # Check for OpenAI API key
@@ -179,39 +93,116 @@ else:
 # Initialize OpenAI client
 client = OpenAI(api_key=api_key)
 
-def get_program_info_for_query(query):
-    """Get relevant program information based on the query"""
+def load_ef_content():
+    """Load EF Gap Year content from text files"""
+    # Check if content is already loaded in session state
+    if "ef_content" not in st.session_state:
+        content_dict = {}
+        
+        # Look for text files in the 'ef_content' directory
+        try:
+            content_files = glob.glob("ef_content/*.txt")
+            
+            if not content_files:
+                st.warning("No content files found. Please make sure you've added the text files to the 'ef_content' directory.")
+                # Return a minimal content dictionary with instructions
+                return {
+                    "missing_content": "No EF Gap Year content files found. Please follow the setup instructions."
+                }
+            
+            # Load each file
+            for file_path in content_files:
+                try:
+                    file_name = os.path.basename(file_path).replace(".txt", "")
+                    with open(file_path, 'r', encoding='utf-8') as file:
+                        content = file.read()
+                        content_dict[file_name] = content
+                except Exception as e:
+                    st.error(f"Error loading {file_path}: {str(e)}")
+            
+            st.session_state.ef_content = content_dict
+        except Exception as e:
+            st.error(f"Error loading content files: {str(e)}")
+            return {
+                "error": f"Error loading content: {str(e)}"
+            }
+    
+    return st.session_state.ef_content
+
+def get_relevant_content(query, content_dict, max_chunks=5, chunk_size=2000):
+    """Get most relevant content chunks for the query"""
+    # If there's an error or missing content, return that message
+    if "error" in content_dict or "missing_content" in content_dict:
+        return next(iter(content_dict.values()))
+    
+    # Simple keyword-based relevance scoring
     query_lower = query.lower()
+    scored_chunks = []
     
-    # Combine all program summaries
-    all_info = ""
+    # Keywords for different program types
+    keywords = {
+        "changemaker": ["changemaker", "service", "sustainability", "conservation", "costa rica", "dominican", "peru", "ecuador", "galapagos"],
+        "pathfinder": ["pathfinder", "europe", "england", "france", "spain", "portugal", "germany", "switzerland", "italy"],
+        "voyager": ["voyager", "australia", "thailand", "japan", "adventure", "exploration"],
+        "year": ["year program", "full year", "academic year", "gap year", "23-week", "23 week"],
+        "general": ["preparation", "packing", "visa", "safety", "accommodation", "meals", "flight", "budget", "money", "credit", "college"]
+    }
     
-    # Check which programs are relevant to the query
-    if any(keyword in query_lower for keyword in ["changemaker", "sustainability", "costa rica", "dominican", "peru", "ecuador", "galapagos", "conservation"]):
-        all_info += "CHANGEMAKER PROGRAM:\n" + PROGRAM_SUMMARIES["changemaker"] + "\n\n"
+    # Determine which program types are most relevant
+    program_scores = {}
+    for program, program_keywords in keywords.items():
+        score = sum(1 for keyword in program_keywords if keyword in query_lower)
+        program_scores[program] = score
     
-    if any(keyword in query_lower for keyword in ["pathfinder", "europe", "england", "france", "spain", "portugal", "germany", "switzerland", "italy"]):
-        all_info += "PATHFINDER PROGRAM:\n" + PROGRAM_SUMMARIES["pathfinder"] + "\n\n"
+    # Get relevant programs (those with score > 0, or all if none have score > 0)
+    relevant_programs = [p for p, s in program_scores.items() if s > 0]
+    if not relevant_programs:
+        relevant_programs = list(keywords.keys())
     
-    if any(keyword in query_lower for keyword in ["voyager", "australia", "thailand", "japan", "adventure"]):
-        all_info += "VOYAGER PROGRAM:\n" + PROGRAM_SUMMARIES["voyager"] + "\n\n"
+    # Add 'general' if it's not already included
+    if "general" not in relevant_programs:
+        relevant_programs.append("general")
     
-    if any(keyword in query_lower for keyword in ["year", "full year", "23-week", "23 week", "academic year"]):
-        all_info += "YEAR PROGRAM:\n" + PROGRAM_SUMMARIES["year"] + "\n\n"
+    # Get all content chunks from relevant programs
+    all_chunks = []
+    for file_name, content in content_dict.items():
+        if any(program in file_name.lower() for program in relevant_programs):
+            # Split content into chunks
+            content_chunks = [content[i:i+chunk_size] for i in range(0, len(content), chunk_size)]
+            all_chunks.extend([(file_name, chunk) for chunk in content_chunks])
     
-    # If no specific program is mentioned, include all program information
-    if not all_info or any(keyword in query_lower for keyword in ["all programs", "programs", "options", "compare", "difference"]):
-        all_info = "PROGRAM OPTIONS:\n"
-        for program, info in PROGRAM_SUMMARIES.items():
-            all_info += f"{program.upper()} PROGRAM:\n{info}\n\n"
+    # If specific program not found, use all content
+    if not all_chunks:
+        for file_name, content in content_dict.items():
+            content_chunks = [content[i:i+chunk_size] for i in range(0, len(content), chunk_size)]
+            all_chunks.extend([(file_name, chunk) for chunk in content_chunks])
     
-    return all_info
+    # Simple scoring: count occurrences of query words in chunks
+    query_words = set(query_lower.split())
+    for file_name, chunk in all_chunks:
+        chunk_lower = chunk.lower()
+        score = sum(1 for word in query_words if word in chunk_lower)
+        scored_chunks.append((file_name, chunk, score))
+    
+    # Sort by score and take top chunks
+    scored_chunks.sort(key=lambda x: x[2], reverse=True)
+    top_chunks = scored_chunks[:max_chunks]
+    
+    # Format the context with file names
+    context_text = ""
+    for file_name, chunk, _ in top_chunks:
+        context_text += f"--- From {file_name} ---\n{chunk}\n\n"
+    
+    return context_text
 
 def get_chatbot_response(query, conversation_history):
-    """Get response from OpenAI using program information"""
+    """Get response from OpenAI with relevant context"""
     try:
-        # Get relevant program information
-        program_info = get_program_info_for_query(query)
+        # Load content
+        content_dict = load_ef_content()
+        
+        # Get relevant content
+        relevant_context = get_relevant_content(query, content_dict)
         
         # Format conversation history
         conversation_text = ""
@@ -221,15 +212,14 @@ def get_chatbot_response(query, conversation_history):
         
         # Format the prompt
         prompt = SYSTEM_INSTRUCTIONS.format(
-            program_info=program_info,
-            general_info=GENERAL_INFO,
-            query=query,
-            conversation=conversation_text
+            context=relevant_context,
+            conversation=conversation_text,
+            question=query
         )
         
         # Get response from OpenAI
         response = client.chat.completions.create(
-            model="gpt-3.5-turbo",
+            model="gpt-3.5-turbo-16k",  # Using the 16k model for longer context
             messages=[
                 {"role": "system", "content": "You are a helpful assistant for EF Gap Year students."},
                 {"role": "user", "content": prompt}
@@ -256,7 +246,7 @@ def display_messages():
         else:
             st.markdown(f"""
             <div class="chat-message bot">
-                <img class="avatar" src="https://a.storyblok.com/f/152976/x/807eb80d2a/favicon-removebg-preview.png">
+                <img class="avatar" src="https://scontent-bos5-1.xx.fbcdn.net/v/t39.30808-1/297336821_1577911329293738_3524076058854264022_n.jpg">
                 <div class="message">{message["content"]}</div>
             </div>
             """, unsafe_allow_html=True)
@@ -270,6 +260,19 @@ def main():
     gap year or semester program. Feel free to ask me any questions about your program,
     travel preparations, or what to expect during your EF Gap Year experience.
     """)
+    
+    # Check for content files
+    content_dict = load_ef_content()
+    if "missing_content" in content_dict:
+        st.warning("""
+        ⚠️ EF Gap Year content files not found. Please follow these steps:
+        
+        1. Create a folder named 'ef_content' in your repository
+        2. Save the content from each of your program guide URLs as text files in that folder
+        3. Each file should be named descriptively (e.g., 'changemaker-fall-2025.txt')
+        4. Push these files to your GitHub repository
+        5. Redeploy the app
+        """)
     
     # Initialize session state for messages
     if 'messages' not in st.session_state:
