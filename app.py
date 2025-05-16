@@ -3,22 +3,18 @@ import os
 from dotenv import load_dotenv
 import logging
 import traceback
-from langchain_openai import ChatOpenAI, OpenAIEmbeddings
-from langchain_community.vectorstores import Chroma
-from langchain.chains import ConversationalRetrievalChain
-from langchain.prompts import PromptTemplate
-from langchain.memory import ConversationBufferMemory
+from openai import OpenAI
 import requests
 from bs4 import BeautifulSoup
 import PyPDF2
 from io import BytesIO
 import re
-from langchain_text_splitters import RecursiveCharacterTextSplitter
+import time
 
 # Load environment variables
 load_dotenv()
 
-# Setup logging with stream handler to capture logs
+# Setup logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
@@ -30,8 +26,8 @@ st.set_page_config(
 )
 
 # Constants
-PERSIST_DIRECTORY = "ef_gapyear_db"
-OPENAI_MODEL = "gpt-3.5-turbo"  # Using GPT-3.5 as a fallback model if GPT-4 isn't available
+MAX_URLS_TO_PROCESS = 5  # Limit initial processing to avoid resource constraints
+GPT_MODEL = "gpt-3.5-turbo"  # Using GPT-3.5 for cost and speed
 
 # Check for OpenAI API key
 if "OPENAI_API_KEY" not in os.environ:
@@ -54,49 +50,8 @@ if "OPENAI_API_KEY" not in os.environ:
     # Stop execution if no API key
     st.stop()
 
-# URLs to scrape
-urls = [
-    "https://a.storyblok.com/f/234741/x/46a3c53899/socialidentityresourcesfortravelers_2-14-23.pdf",
-    "https://efgapyear.com/program-guide-the-changemaker-fall-2025-session-1/",
-    "https://efgapyear.com/program-guide-the-changemaker-fall-2025-session-2/",
-    "https://efgapyear.com/program-guide-the-changemaker-spring-2026-session-1/",
-    "https://efgapyear.com/program-guide-the-changemaker-spring-2026-session-2/",
-    "https://efgapyear.com/program-guide-the-pathfinder-fall-2025-session-1/",
-    "https://efgapyear.com/program-guide-the-pathfinder-fall-2025-session-2/",
-    "https://efgapyear.com/en/program-guide-the-pathfinder-spring-2026-session-1/",
-    "https://efgapyear.com/program-guide-the-pathfinder-spring-2026-session-2/",
-    "https://efgapyear.com/program-guide-the-voyager-fall-2025-session-1/",
-    "https://efgapyear.com/program-guide-the-voyager-fall-2025-session-2/",
-    "https://efgapyear.com/program-guide-the-voyager-spring-2026-session-1/",
-    "https://efgapyear.com/program-guide-the-voyager-spring-2026-session-2/",
-    "https://efgapyear.com/program-guide-the-year-2025-26-session-1/",
-    "https://efgapyear.com/program-guide-the-year-2025-26-session-2/",
-    "https://efgapyear.com/program-guide-the-year-2025-26-session-3/"
-]
-
-# System prompt for the chatbot
-SYSTEM_PROMPT = """
-You are a helpful assistant for prospective EF Gap Year students. Your role is to help them prepare for their 
-upcoming gap year or semester programs by providing quick, accurate, and helpful responses based on the 
-information from approved EF Gap Year resources.
-
-Guidelines:
-1. ONLY answer questions about EF Gap Year programs using ONLY the information from the provided context.
-2. Your tone should be kind, thorough (but clear), helpful, trustworthy, and confidence-inspiring.
-3. Remember, these are nervous students who are about to embark on a grand trip around the world, and their nerves are high.
-4. Under NO circumstances should your responses be fabricated or misleading.
-5. If you are not confident that you have an accurate answer to a student's question, respond with:
-   "I am not sure I can provide an accurate answer to that question. I suggest connecting with your human EF Gap Year advisor on this one."
-6. If a user asks any question that is NOT about an EF Gap Year program, politely respond with:
-   "My role is to help you to prepare for your EF Gap Year or Semester program, so I am afraid I cannot help with this particular question."
-7. After each response, ask ONE relevant follow-up question to further engage the student in conversation.
-8. Your follow-up question should allow them to expand on their initial query, request more information, or ensure they're receiving necessary information.
-
-Context: {context}
-
-Chat History: {chat_history}
-Student Question: {question}
-"""
+# Initialize OpenAI client
+client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
 
 # Custom CSS
 st.markdown("""
@@ -145,10 +100,51 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-def extract_pdf_content(url):
-    """Extract content from PDF files"""
+# System instructions
+SYSTEM_INSTRUCTIONS = """
+You are a helpful assistant for prospective EF Gap Year students. Your role is to help them prepare for their 
+upcoming gap year or semester programs by providing quick, accurate, and helpful responses based on the 
+information from approved EF Gap Year resources.
+
+Guidelines:
+1. ONLY answer questions about EF Gap Year programs using ONLY the information from the provided context.
+2. Your tone should be kind, thorough (but clear), helpful, trustworthy, and confidence-inspiring.
+3. Remember, these are nervous students who are about to embark on a grand trip around the world, and their nerves are high.
+4. Under NO circumstances should your responses be fabricated or misleading.
+5. If you are not confident that you have an accurate answer to a student's question, respond with:
+   "I am not sure I can provide an accurate answer to that question. I suggest connecting with your human EF Gap Year advisor on this one."
+6. If a user asks any question that is NOT about an EF Gap Year program, politely respond with:
+   "My role is to help you to prepare for your EF Gap Year or Semester program, so I am afraid I cannot help with this particular question."
+7. After each response, ask ONE relevant follow-up question to further engage the student in conversation.
+8. Your follow-up question should allow them to expand on their initial query, request more information, or ensure they're receiving necessary information.
+"""
+
+# URLs to scrape (prioritized)
+URLS = [
+    # Start with most important URLs to ensure we get some content even if process is interrupted
+    "https://efgapyear.com/program-guide-the-changemaker-fall-2025-session-1/",
+    "https://efgapyear.com/program-guide-the-pathfinder-fall-2025-session-1/",
+    "https://efgapyear.com/program-guide-the-voyager-fall-2025-session-1/",
+    "https://efgapyear.com/program-guide-the-year-2025-26-session-1/",
+    "https://a.storyblok.com/f/234741/x/46a3c53899/socialidentityresourcesfortravelers_2-14-23.pdf",
+    # Add more URLs if resources allow
+    "https://efgapyear.com/program-guide-the-changemaker-fall-2025-session-2/",
+    "https://efgapyear.com/program-guide-the-pathfinder-fall-2025-session-2/",
+    "https://efgapyear.com/program-guide-the-voyager-fall-2025-session-2/",
+    "https://efgapyear.com/program-guide-the-year-2025-26-session-2/",
+    "https://efgapyear.com/program-guide-the-changemaker-spring-2026-session-1/",
+    "https://efgapyear.com/program-guide-the-pathfinder-spring-2026-session-1/",
+    "https://efgapyear.com/program-guide-the-voyager-spring-2026-session-1/",
+    "https://efgapyear.com/program-guide-the-year-2025-26-session-3/",
+    "https://efgapyear.com/program-guide-the-changemaker-spring-2026-session-2/",
+    "https://efgapyear.com/program-guide-the-pathfinder-spring-2026-session-2/",
+    "https://efgapyear.com/program-guide-the-voyager-spring-2026-session-2/"
+]
+
+def extract_pdf_content(url, timeout=30):
+    """Extract content from PDF files with timeout"""
     try:
-        response = requests.get(url)
+        response = requests.get(url, timeout=timeout)
         response.raise_for_status()
         
         pdf_file = BytesIO(response.content)
@@ -166,14 +162,14 @@ def extract_pdf_content(url):
         logger.error(f"Error extracting PDF content from {url}: {e}")
         return ""
 
-def extract_web_content(url):
-    """Extract content from web pages"""
+def extract_web_content(url, timeout=30):
+    """Extract content from web pages with timeout"""
     try:
         headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
         }
         
-        response = requests.get(url, headers=headers)
+        response = requests.get(url, headers=headers, timeout=timeout)
         response.raise_for_status()
         
         soup = BeautifulSoup(response.content, 'html.parser')
@@ -193,187 +189,193 @@ def extract_web_content(url):
         logger.error(f"Error extracting web content from {url}: {e}")
         return ""
 
-def scrape_content():
-    """Scrape content from all the URLs"""
-    all_content = []
-    progress_bar = st.progress(0)
-    status_text = st.empty()
-    
-    for i, url in enumerate(urls):
-        status_text.text(f"Scraping {url}...")
-        try:
-            if url.endswith('.pdf'):
-                content = extract_pdf_content(url)
+def fetch_content(max_urls=MAX_URLS_TO_PROCESS):
+    """Fetch content from URLs with progress indicators"""
+    if "content_cache" not in st.session_state:
+        content_collection = []
+        
+        with st.status("Fetching content from EF Gap Year resources...", expanded=True) as status:
+            for i, url in enumerate(URLS[:max_urls]):
+                st.write(f"Fetching from {url}...")
+                try:
+                    if url.endswith('.pdf'):
+                        content = extract_pdf_content(url)
+                    else:
+                        content = extract_web_content(url)
+                        
+                    if content:
+                        content_collection.append({
+                            'source': url, 
+                            'content': content
+                        })
+                        st.write(f"✅ Successfully fetched content ({len(content)} characters)")
+                    else:
+                        st.write(f"⚠️ No content retrieved")
+                except Exception as e:
+                    st.write(f"❌ Error: {str(e)}")
+                
+                # Brief pause to prevent rate limiting
+                time.sleep(1)
+            
+            if content_collection:
+                status.update(label=f"Fetched content from {len(content_collection)} sources", state="complete")
+                st.session_state.content_cache = content_collection
             else:
-                content = extract_web_content(url)
-                
-            if content:
-                all_content.append({
-                    'source': url, 
-                    'content': content
-                })
-        except Exception as e:
-            logger.error(f"Error scraping {url}: {e}")
-        
-        # Update progress
-        progress = (i + 1) / len(urls)
-        progress_bar.progress(progress)
+                status.update(label="Failed to fetch content", state="error")
+                st.error("Could not fetch content from any sources. Please try again.")
+                return None
     
-    status_text.empty()
-    progress_bar.empty()
-    
-    return all_content
+    return st.session_state.content_cache
 
-def process_and_store_content(all_content, persist_directory=PERSIST_DIRECTORY):
-    """Process and store content in a vector database"""
-    status_text = st.empty()
-    status_text.text("Processing content...")
-    
+def simple_semantic_search(query, content_collection, n=3):
+    """Simple semantic search using OpenAI embeddings"""
     try:
-        # Combine all content
-        documents = []
-        for item in all_content:
-            # Create chunks with metadata about source
-            text_splitter = RecursiveCharacterTextSplitter(
-                chunk_size=1000,
-                chunk_overlap=200,
-                length_function=len,
-            )
-            chunks = text_splitter.split_text(item['content'])
-            for chunk in chunks:
-                documents.append({
-                    "text": chunk,
-                    "metadata": {"source": item['source']}
+        # Create embedding for the query
+        query_response = client.embeddings.create(
+            model="text-embedding-ada-002",
+            input=query
+        )
+        query_embedding = query_response.data[0].embedding
+        
+        # Filter content to avoid token limits (simple truncation)
+        processed_content = []
+        for item in content_collection:
+            # Split content into manageable chunks to avoid token limits
+            chunks = [item['content'][i:i+4000] for i in range(0, len(item['content']), 4000)]
+            for chunk in chunks[:3]:  # Take only first few chunks from each source
+                processed_content.append({
+                    'source': item['source'],
+                    'content': chunk
                 })
         
-        logger.info(f"Created {len(documents)} chunks from {len(all_content)} sources")
-        status_text.text(f"Created {len(documents)} chunks from {len(all_content)} sources. Building vector database...")
+        # Score each content chunk against query (using OpenAI)
+        # This is more efficient than computing embeddings for every chunk
+        context_scoring_prompt = f"""
+        I need to find content relevant to a user query from multiple sources.
         
-        # Create embeddings and store in vector DB
-        embeddings = OpenAIEmbeddings()
+        Query: {query}
         
-        # Create vector store
-        texts = [doc["text"] for doc in documents]
-        metadatas = [doc["metadata"] for doc in documents]
+        For each piece of content below, provide a relevance score (0-10) where:
+        - 10: Directly and completely answers the query
+        - 7-9: Contains significant relevant information
+        - 4-6: Has some relevant information
+        - 1-3: Tangentially related
+        - 0: Not relevant at all
         
-        # Create the DB
-        logger.info(f"Creating new vector store in {persist_directory}")
-        db = Chroma.from_texts(
-            texts=texts, 
-            embedding=embeddings, 
-            metadatas=metadatas,
-            persist_directory=persist_directory
-        )
-        db.persist()
+        Return only the scores, one per line, with no explanations.
+        """
         
-        status_text.empty()
-        return db
+        contents_to_score = [f"Content {i+1}: {item['content'][:1000]}..." for i, item in enumerate(processed_content)]
+        
+        # Split into batches to avoid token limits
+        batch_size = 5
+        all_scores = []
+        
+        for i in range(0, len(contents_to_score), batch_size):
+            batch = contents_to_score[i:i+batch_size]
+            scoring_prompt = context_scoring_prompt + "\n\n" + "\n\n".join(batch)
+            
+            try:
+                response = client.chat.completions.create(
+                    model="gpt-3.5-turbo",
+                    messages=[
+                        {"role": "system", "content": "You are a helpful assistant that evaluates document relevance."},
+                        {"role": "user", "content": scoring_prompt}
+                    ],
+                    temperature=0.0
+                )
+                
+                # Parse scores (expecting one number per line)
+                score_text = response.choices[0].message.content.strip()
+                scores = []
+                for line in score_text.split('\n'):
+                    try:
+                        score = float(line.strip())
+                        scores.append(score)
+                    except:
+                        continue
+                
+                # Pad with zeros if parsing failed
+                scores = scores + [0] * (len(batch) - len(scores))
+                all_scores.extend(scores)
+            except Exception as e:
+                logger.error(f"Error scoring batch {i}: {e}")
+                # If scoring fails, assign zero scores to the batch
+                all_scores.extend([0] * len(batch))
+        
+        # Pad with zeros if we have fewer scores than content items
+        all_scores = all_scores + [0] * (len(processed_content) - len(all_scores))
+        
+        # Pair scores with content
+        scored_content = [
+            {**processed_content[i], 'score': score}
+            for i, score in enumerate(all_scores) if i < len(processed_content)
+        ]
+        
+        # Sort by score and take top n
+        top_content = sorted(scored_content, key=lambda x: x['score'], reverse=True)[:n]
+        
+        return top_content
     except Exception as e:
-        status_text.empty()
-        logger.error(f"Error processing content: {e}")
-        raise
+        logger.error(f"Error in semantic search: {e}")
+        # Return a subset of content as fallback
+        return content_collection[:n] if content_collection else []
 
-def load_retriever(persist_directory=PERSIST_DIRECTORY):
-    """Load the vector store retriever"""
-    error_container = st.container()
+def get_chatbot_response(query, chat_history=None):
+    """Get response from the chatbot using relevant content"""
+    if chat_history is None:
+        chat_history = []
     
     try:
-        embeddings = OpenAIEmbeddings()
+        # Initialize content if not already done
+        content_collection = fetch_content()
+        if not content_collection:
+            return "I'm having trouble accessing information about EF Gap Year programs. Please try again later or contact your EF Gap Year advisor."
         
-        # Check if directory exists
-        if not os.path.exists(persist_directory):
-            # If not, scrape the content and create the vector store
-            with st.status("Building knowledge base. This might take a few minutes...", expanded=True) as status:
-                st.write("Scraping content from EF Gap Year resources...")
-                all_content = scrape_content()
-                
-                if not all_content:
-                    status.update(state="error", label="Failed to scrape content")
-                    error_container.error("Failed to scrape content from any of the provided URLs. Please check your internet connection.")
-                    raise Exception("Failed to scrape content")
-                
-                st.write(f"Successfully scraped {len(all_content)} resources. Processing content...")
-                db = process_and_store_content(all_content, persist_directory)
-                status.update(state="complete", label="Knowledge base built successfully!")
-        else:
-            # Load the existing vector store
-            db = Chroma(persist_directory=persist_directory, embedding_function=embeddings)
+        # Fetch relevant content
+        relevant_content = simple_semantic_search(query, content_collection)
         
-        # Create a retriever with search parameters
-        retriever = db.as_retriever(
-            search_type="similarity",
-            search_kwargs={"k": 5}  # Retrieve top 5 most relevant chunks
-        )
+        # Prepare context from relevant content
+        context = "\n\n".join([
+            f"Content from {item['source']}:\n{item['content']}"
+            for item in relevant_content
+        ])
         
-        return retriever
-    except Exception as e:
-        logger.error(f"Error loading retriever: {str(e)}")
-        error_container.error(f"Error loading retriever: {str(e)}")
-        error_container.error("Try refreshing the page or check your OpenAI API key settings.")
+        # Prepare chat history for context
+        formatted_history = ""
+        for msg in chat_history[-6:]:  # Include last 6 messages at most
+            role = "Student" if msg["role"] == "user" else "Assistant"
+            formatted_history += f"{role}: {msg['content']}\n\n"
         
-        if "openai" in str(e).lower():
-            error_container.error("There appears to be an issue with your OpenAI API key. Please check that it is valid and has enough credits.")
-        
-        st.code(traceback.format_exc())
-        raise
+        # Create the complete prompt
+        prompt = f"""
+{SYSTEM_INSTRUCTIONS}
 
-def create_chatbot():
-    """Create the chatbot with RAG capabilities"""
-    try:
-        # Load the retriever
-        retriever = load_retriever()
-        
-        # Set up the language model
-        try:
-            llm = ChatOpenAI(
-                temperature=0.2,
-                model=OPENAI_MODEL
-            )
-        except Exception as model_error:
-            logger.warning(f"Error initializing GPT-4 model: {model_error}. Falling back to GPT-3.5-turbo.")
-            # Fallback to GPT-3.5 if GPT-4 is not available
-            llm = ChatOpenAI(
-                temperature=0.2,
-                model="gpt-3.5-turbo"
-            )
-        
-        # Create prompt template
-        prompt = PromptTemplate(
-            input_variables=["context", "chat_history", "question"],
-            template=SYSTEM_PROMPT
-        )
-        
-        # Set up memory
-        memory = ConversationBufferMemory(
-            memory_key="chat_history",
-            return_messages=True
-        )
-        
-        # Create the conversational chain
-        qa_chain = ConversationalRetrievalChain.from_llm(
-            llm=llm,
-            retriever=retriever,
-            memory=memory,
-            combine_docs_chain_kwargs={"prompt": prompt}
-        )
-        
-        return qa_chain
-    except Exception as e:
-        logger.error(f"Error creating chatbot: {e}")
-        raise
+CONTEXT INFORMATION:
+{context}
 
-def get_response(chain, query):
-    """Get a response from the chatbot"""
-    try:
-        response = chain({"question": query})
-        return response["answer"]
+CONVERSATION HISTORY:
+{formatted_history}
+
+Student Question: {query}
+
+Your response:
+"""
+        
+        # Get response from OpenAI
+        response = client.chat.completions.create(
+            model=GPT_MODEL,
+            messages=[
+                {"role": "system", "content": "You are a helpful assistant for EF Gap Year students."},
+                {"role": "user", "content": prompt}
+            ],
+            temperature=0.7,
+            max_tokens=800
+        )
+        
+        return response.choices[0].message.content.strip()
     except Exception as e:
-        logger.error(f"Error getting response: {e}")
-        
-        # Check if it's an API key error
-        if "API key" in str(e):
-            return "I'm having trouble with my API connection. Please check the API key settings and try again."
-        
+        logger.error(f"Error getting chatbot response: {e}")
         return "I encountered an error processing your question. Please try again or contact your EF Gap Year advisor for assistance."
 
 def display_messages():
@@ -408,27 +410,19 @@ def main():
     if 'messages' not in st.session_state:
         st.session_state.messages = []
     
+    # Initialize content on first load
+    if 'initialized' not in st.session_state:
+        try:
+            with st.spinner("Initializing, please wait..."):
+                # This will trigger content fetching and caching
+                fetch_content()
+                st.session_state.initialized = True
+        except Exception as e:
+            st.error(f"Initialization error: {str(e)}")
+            st.session_state.initialized = False
+    
     # Display chat messages
     display_messages()
-    
-    # Initialize chatbot (with better error handling)
-    if 'chatbot' not in st.session_state:
-        try:
-            with st.spinner("Initializing chatbot..."):
-                st.session_state.chatbot = create_chatbot()
-        except Exception as e:
-            st.error(f"Failed to initialize the chatbot: {str(e)}")
-            st.error("Check the logs for more details and try refreshing the page.")
-            
-            # Add debug info in an expander
-            with st.expander("Debug Information"):
-                st.write("Error details:", str(e))
-                st.code(traceback.format_exc())
-                st.write("Environment:")
-                st.write(f"- OpenAI API Key set: {'Yes' if 'OPENAI_API_KEY' in os.environ else 'No'}")
-                st.write(f"- Database directory exists: {'Yes' if os.path.exists(PERSIST_DIRECTORY) else 'No'}")
-            
-            # Still allow the user to see the chat interface
     
     # Chat input
     user_input = st.chat_input("Type your question here...")
@@ -437,28 +431,15 @@ def main():
         # Add user message to chat history
         st.session_state.messages.append({"role": "user", "content": user_input})
         
-        try:
-            # Check if chatbot is initialized
-            if 'chatbot' in st.session_state:
-                # Get response from chatbot
-                response = get_response(st.session_state.chatbot, user_input)
-            else:
-                response = "I'm sorry, the chatbot is not initialized properly. Please try refreshing the page or contact support."
-                
-            # Add bot response to chat history
-            st.session_state.messages.append({"role": "assistant", "content": response})
+        # Show spinner during processing
+        with st.spinner("Thinking..."):
+            response = get_chatbot_response(user_input, st.session_state.messages)
             
-            # Force a rerun to update the UI with the new messages
-            st.rerun()
-        except Exception as e:
-            logger.error(f"Error getting response: {e}")
-            st.error("Sorry, I encountered an error. Please try again or contact your EF Gap Year advisor.")
-            
-            # Add error to chat if needed
-            st.session_state.messages.append({
-                "role": "assistant", 
-                "content": "I'm sorry, I encountered a technical issue. Please try again or contact your EF Gap Year advisor for assistance."
-            })
+        # Add bot response to chat history
+        st.session_state.messages.append({"role": "assistant", "content": response})
+        
+        # Force a rerun to update the UI with the new messages
+        st.rerun()
 
 if __name__ == "__main__":
     main()
