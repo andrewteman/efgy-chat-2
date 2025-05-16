@@ -1,18 +1,6 @@
 import streamlit as st
 import os
-from dotenv import load_dotenv
-import logging
-import requests
-from bs4 import BeautifulSoup
 from openai import OpenAI
-import time
-
-# Load environment variables
-load_dotenv()
-
-# Setup logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-logger = logging.getLogger(__name__)
 
 # Page configuration
 st.set_page_config(
@@ -21,40 +9,7 @@ st.set_page_config(
     layout="centered"
 )
 
-# Constants - keep these minimal
-MAX_URLS_TO_PROCESS = 3  # Extremely limited to avoid timeouts
-GPT_MODEL = "gpt-3.5-turbo"  # Using GPT-3.5 for speed
-REQUEST_TIMEOUT = 10  # Short timeout for web requests
-
-# Check for OpenAI API key
-if "OPENAI_API_KEY" not in os.environ:
-    st.error("⚠️ OpenAI API key not found. Please set your API key in the app settings.")
-    st.info("You can set your OpenAI API key in the app settings by clicking on 'Manage app' in the lower right corner.")
-    
-    # Add a form for entering the API key directly
-    with st.form("api_key_form"):
-        api_key = st.text_input("Enter your OpenAI API key:", type="password")
-        submit_button = st.form_submit_button("Set API Key")
-        
-        if submit_button:
-            if api_key.strip():
-                os.environ["OPENAI_API_KEY"] = api_key
-                st.success("API key set successfully! Please refresh the page.")
-                st.experimental_rerun()
-            else:
-                st.error("Please enter a valid API key.")
-    
-    # Stop execution if no API key
-    st.stop()
-
-# Initialize OpenAI client
-try:
-    client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
-except Exception as e:
-    st.error(f"Failed to initialize OpenAI client: {str(e)}")
-    st.stop()
-
-# Custom CSS
+# Custom CSS for chat interface
 st.markdown("""
 <style>
     .main {
@@ -94,155 +49,143 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# System instructions - kept brief to reduce token usage
+# Pre-populated knowledge base about EF Gap Year programs
+KNOWLEDGE_BASE = """
+EF Gap Year Programs Overview:
+
+1. The Changemaker Program:
+   - Focus: Language learning, service learning, leadership
+   - Fall 2025 Session 1: September-December 2025
+   - Fall 2025 Session 2: January-April 2026
+   - Spring 2026 Sessions: Also available
+   - Destinations typically include: London, Paris, Barcelona, Madrid
+   - Activities: Language study, service projects, leadership training
+
+2. The Pathfinder Program:
+   - Focus: Language study, internship, cultural immersion
+   - Fall 2025 Session 1: September-December 2025
+   - Fall 2025 Session 2: January-April 2026
+   - Spring 2026 Sessions: Also available
+   - Destinations typically include: Tokyo, Sydney, Berlin, Florence
+   - Activities: Language classes, international internship, cultural activities
+
+3. The Voyager Program:
+   - Focus: Cultural exploration across multiple countries
+   - Fall 2025 Session 1: September-December 2025
+   - Fall 2025 Session 2: January-April 2026
+   - Spring 2026 Sessions: Also available
+   - Destinations typically include: Multiple European and Asian cities
+   - Activities: Cultural tours, adventure activities, experiential learning
+
+4. The Year Program:
+   - Duration: Full academic year (September 2025-April 2026)
+   - Focus: Comprehensive experience combining best elements
+   - 2025-26 Session: September 2025-April 2026
+   - Destinations: Multiple international locations
+   - Activities: Language learning, service, internship, cultural immersion
+
+General Information:
+- All programs include 24/7 support from EF staff
+- Pre-departure support includes visa guidance, packing assistance
+- Programs include international health insurance
+- College credit options available for most programs
+- Language classes taught by certified instructors
+- Accommodation typically includes homestays, residence centers, or hotels
+- Transportation between destinations arranged by EF
+- Regular group activities and excursions included
+- All programs have health, safety, and emergency protocols
+
+Preparing for your trip:
+- Required documentation: Valid passport (valid 6+ months after program end)
+- Many destinations require visas which EF helps arrange
+- Recommended: Basic language preparation for destination countries
+- Packing essentials: Weather-appropriate clothing, adapter plugs, necessary medications
+- Budgeting: Students should bring spending money for personal expenses
+- Communication: International phone plans or local SIM cards recommended
+- Cultural preparation: Research local customs and traditions
+
+Common pre-departure concerns:
+- Homesickness: EF provides support and community to help students adjust
+- Safety: All destinations monitored for safety, staff available 24/7
+- Language barriers: Programs designed for all language levels, including beginners
+- Making friends: Orientation activities designed to foster friendships
+- Academic concerns: Academic advisors help with college credit transfers
+"""
+
+# System instructions for the chatbot
 SYSTEM_INSTRUCTIONS = """
-You are a helpful assistant for EF Gap Year students.
-Answer questions based ONLY on the provided context information.
-Be kind, helpful, and confidence-inspiring.
-If unsure, suggest contacting an EF Gap Year advisor.
-For non-program questions, politely explain your role is to help with EF Gap Year programs.
-End responses with a relevant follow-up question.
+You are a helpful assistant for prospective EF Gap Year students. Your role is to help them prepare for their 
+upcoming gap year or semester programs by providing quick, accurate, and helpful responses based on the 
+information provided about EF Gap Year resources.
+
+Guidelines:
+1. ONLY answer questions about EF Gap Year programs using ONLY the information from the provided knowledge base.
+2. Your tone should be kind, thorough (but clear), helpful, trustworthy, and confidence-inspiring.
+3. Remember, these are nervous students who are about to embark on a grand trip around the world, and their nerves are high.
+4. Under NO circumstances should your responses be fabricated or misleading.
+5. If you are not confident that you have an accurate answer to a student's question, respond with:
+   "I am not sure I can provide an accurate answer to that question. I suggest connecting with your human EF Gap Year advisor on this one."
+6. If a user asks any question that is NOT about an EF Gap Year program, politely respond with:
+   "My role is to help you to prepare for your EF Gap Year or Semester program, so I am afraid I cannot help with this particular question."
+7. After each response, ask ONE relevant follow-up question to further engage the student in conversation.
+8. Your follow-up question should allow them to expand on their initial query, request more information, or ensure they're receiving necessary information.
+
+Knowledge Base:
+{knowledge_base}
+
+Conversation History:
+{conversation_history}
+
+Student Question: {question}
 """
 
-# Essential URLs only - extremely limited to avoid resource issues
-URLS = [
-    # Only most important pages for essential programs
-    "https://efgapyear.com/program-guide-the-changemaker-fall-2025-session-1/",
-    "https://efgapyear.com/program-guide-the-pathfinder-fall-2025-session-1/",
-    "https://efgapyear.com/program-guide-the-voyager-fall-2025-session-1/"
-]
-
-# Hard-coded backup information in case scraping fails
-BACKUP_PROGRAM_INFO = """
-EF Gap Year offers several programs:
-
-1. The Changemaker: A program focused on language learning, service learning, and leadership development.
-   - Fall 2025 Session 1: September - December 2025
-   - Fall 2025 Session 2: January - April 2026
-   - Spring 2026 Sessions also available
-
-2. The Pathfinder: A program with language study, internship, and cultural immersion.
-   - Fall 2025 Session 1: September - December 2025
-   - Fall 2025 Session 2: January - April 2026
-   - Spring 2026 Sessions also available
-
-3. The Voyager: A program focused on cultural exploration across multiple countries.
-   - Fall 2025 Session 1: September - December 2025
-   - Fall 2025 Session 2: January - April 2026
-   - Spring 2026 Sessions also available
-
-4. The Year: A comprehensive program combining the best elements of all programs.
-   - 2025-26 Sessions run from September 2025 through April 2026
-
-For specific details about destinations, activities, and pricing, please contact your EF Gap Year advisor.
-"""
-
-def extract_web_content(url, timeout=REQUEST_TIMEOUT, max_length=10000):
-    """Extract content from web pages with timeout and length limit"""
-    try:
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-        }
-        
-        response = requests.get(url, headers=headers, timeout=timeout)
-        if response.status_code != 200:
-            return ""
-        
-        soup = BeautifulSoup(response.content, 'html.parser')
-        
-        # Remove script and style elements
-        for script in soup(["script", "style"]):
-            script.extract()
-        
-        # Get text and clean it
-        text = soup.get_text()
-        lines = (line.strip() for line in text.splitlines())
-        chunks = (phrase.strip() for line in lines for phrase in line.split("  "))
-        text = ' '.join(chunk for chunk in chunks if chunk)
-        
-        # Truncate to avoid memory issues
-        return text[:max_length]
-    except Exception as e:
-        logger.error(f"Error extracting web content from {url}: {e}")
-        return ""
-
-def fetch_minimal_content(max_urls=MAX_URLS_TO_PROCESS):
-    """Fetch content with extreme resource constraints"""
-    if "content_cache" not in st.session_state:
-        content_collection = []
-        
-        with st.status("Loading information...", expanded=True) as status:
-            for i, url in enumerate(URLS[:max_urls]):
-                if i > 0:
-                    # Add delay between requests to avoid rate limiting
-                    time.sleep(2)
-                
-                st.write(f"Loading program information {i+1}/{max_urls}...")
-                try:
-                    content = extract_web_content(url)
-                    if content:
-                        content_collection.append({
-                            'source': url.split('/')[-2],  # Just use program name as source
-                            'content': content
-                        })
-                except Exception as e:
-                    logger.error(f"Error fetching {url}: {e}")
-            
-            # If we couldn't get content, use backup info
-            if not content_collection:
-                st.write("Using backup program information...")
-                content_collection = [{
-                    'source': 'backup-info',
-                    'content': BACKUP_PROGRAM_INFO
-                }]
-            
-            status.update(label="Information loaded", state="complete")
-            st.session_state.content_cache = content_collection
+# Check for OpenAI API key
+if "OPENAI_API_KEY" not in os.environ and "openai_api_key" not in st.session_state:
+    st.error("⚠️ OpenAI API key not found. Please enter your API key below:")
     
-    return st.session_state.content_cache
+    api_key = st.text_input("OpenAI API Key:", type="password")
+    if api_key:
+        st.session_state.openai_api_key = api_key
+        st.success("API key set successfully!")
+    else:
+        st.stop()
+else:
+    api_key = os.environ.get("OPENAI_API_KEY", st.session_state.get("openai_api_key", ""))
 
-def get_chatbot_response(query, chat_history=None):
-    """Get response using minimal processing"""
-    if chat_history is None:
-        chat_history = []
-    
+# Initialize OpenAI client
+client = OpenAI(api_key=api_key)
+
+def get_chatbot_response(query, conversation_history):
+    """Get response from the chatbot using the static knowledge base"""
     try:
-        # Get content
-        content_collection = fetch_minimal_content()
-        
-        # Prepare context (use all available content - we have very limited content)
-        context_text = "\n\n".join([
-            f"Information about {item['source']}:\n{item['content'][:5000]}"  # Limit size
-            for item in content_collection
-        ])
-        
-        # Keep context size manageable
-        if len(context_text) > 15000:
-            context_text = context_text[:15000] + "..."
-        
-        # Prepare chat history (keep minimal)
+        # Format conversation history
         history_text = ""
-        for msg in chat_history[-4:]:  # Just last 4 messages
+        for msg in conversation_history[-6:]:  # Include up to last 6 messages
             role = "Student" if msg["role"] == "user" else "Assistant"
-            history_text += f"{role}: {msg['content'][:150]}\n"  # Truncate long messages
+            history_text += f"{role}: {msg['content']}\n\n"
         
-        # Create prompt
-        prompt = f"{SYSTEM_INSTRUCTIONS}\n\nCONTEXT:\n{context_text}\n\nHISTORY:\n{history_text}\n\nStudent: {query}\n\nAssistant:"
+        # Format the prompt with all the required information
+        formatted_prompt = SYSTEM_INSTRUCTIONS.format(
+            knowledge_base=KNOWLEDGE_BASE,
+            conversation_history=history_text,
+            question=query
+        )
         
-        # Get response
+        # Get response from OpenAI
         response = client.chat.completions.create(
-            model=GPT_MODEL,
+            model="gpt-3.5-turbo",
             messages=[
-                {"role": "user", "content": prompt}
+                {"role": "system", "content": "You are a helpful assistant for EF Gap Year students."},
+                {"role": "user", "content": formatted_prompt}
             ],
             temperature=0.7,
-            max_tokens=500  # Keep responses reasonably short
+            max_tokens=600
         )
         
         return response.choices[0].message.content.strip()
     except Exception as e:
-        logger.error(f"Error in chatbot response: {e}")
-        return "I'm sorry, I encountered a technical issue. Please try asking again or contact your EF Gap Year advisor for assistance."
+        st.error(f"Error: {str(e)}")
+        return "I encountered an error processing your question. Please try again or contact your EF Gap Year advisor for assistance."
 
 def display_messages():
     """Display chat messages"""
@@ -263,20 +206,18 @@ def display_messages():
             """, unsafe_allow_html=True)
 
 def main():
-    """Main function with minimal processing"""
+    """Main function for the Streamlit app"""
     # Header
     st.markdown("<h1 class='ef-header'>EF Gap Year Assistant</h1>", unsafe_allow_html=True)
     st.markdown("""
     Welcome to the EF Gap Year Assistant! I'm here to help you prepare for your upcoming 
-    gap year or semester program. Feel free to ask me any questions about your program.
+    gap year or semester program. Feel free to ask me any questions about your program,
+    travel preparations, or what to expect during your EF Gap Year experience.
     """)
     
-    # Initialize session state
+    # Initialize session state for messages
     if 'messages' not in st.session_state:
         st.session_state.messages = []
-    
-    # Initialize content - don't do this on first load to avoid timeout
-    # Let it happen when the user asks a question
     
     # Display chat messages
     display_messages()
@@ -287,19 +228,16 @@ def main():
     if user_input:
         # Add user message to chat history
         st.session_state.messages.append({"role": "user", "content": user_input})
-        st.experimental_rerun()  # Rerun to show the user message immediately
-    
-    # Process the last user message if it hasn't been responded to yet
-    if st.session_state.messages and st.session_state.messages[-1]["role"] == "user":
-        with st.spinner("Thinking..."):
-            user_query = st.session_state.messages[-1]["content"]
-            response = get_chatbot_response(user_query, st.session_state.messages[:-1])
-            
-            # Add bot response to chat history
-            st.session_state.messages.append({"role": "assistant", "content": response})
         
-        # Force a rerun to update the UI with the bot response
-        st.experimental_rerun()
+        # Show spinner during processing
+        with st.spinner("Thinking..."):
+            response = get_chatbot_response(user_input, st.session_state.messages)
+            
+        # Add bot response to chat history
+        st.session_state.messages.append({"role": "assistant", "content": response})
+        
+        # Force a rerun to update the UI with the new messages
+        st.rerun()
 
 if __name__ == "__main__":
     main()
