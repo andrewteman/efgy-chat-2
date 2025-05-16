@@ -1,5 +1,6 @@
 import streamlit as st
 import os
+import glob
 from openai import OpenAI
 
 # Page configuration
@@ -46,8 +47,8 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# Simple program information (hard-coded to avoid file loading)
-PROGRAM_INFO = """
+# Fallback program information (used if content files are not found)
+FALLBACK_PROGRAM_INFO = """
 EF Gap Year offers several comprehensive programs for students:
 
 1. The Changemaker Program (Fall 2025 & Spring 2026)
@@ -97,6 +98,88 @@ Program Information:
 Student Question: {question}
 """
 
+def load_content_files():
+    """Load content from files in the ef_content folder safely"""
+    try:
+        # Check if ef_content folder exists
+        if not os.path.exists('ef_content'):
+            st.warning("ef_content folder not found. Using fallback information.")
+            return {"fallback": FALLBACK_PROGRAM_INFO}
+        
+        # Try to load files from the folder
+        content_files = glob.glob('ef_content/*.txt')
+        
+        if not content_files:
+            st.warning("No content files found in ef_content folder. Using fallback information.")
+            return {"fallback": FALLBACK_PROGRAM_INFO}
+        
+        # Load content from each file
+        content_dict = {}
+        for file_path in content_files:
+            try:
+                file_name = os.path.basename(file_path).replace(".txt", "")
+                with open(file_path, 'r', encoding='utf-8') as file:
+                    content = file.read()
+                    content_dict[file_name] = content
+            except Exception as e:
+                st.warning(f"Error loading {file_path}: {str(e)}")
+        
+        if not content_dict:
+            st.warning("Failed to load any content files. Using fallback information.")
+            return {"fallback": FALLBACK_PROGRAM_INFO}
+        
+        return content_dict
+    
+    except Exception as e:
+        st.warning(f"Error accessing content files: {str(e)}. Using fallback information.")
+        return {"fallback": FALLBACK_PROGRAM_INFO}
+
+def get_relevant_content(query, content_dict):
+    """Get relevant content based on the query"""
+    query_lower = query.lower()
+    
+    # Check which content is most relevant to the query
+    if "fallback" in content_dict:
+        # Only fallback content is available
+        return content_dict["fallback"]
+    
+    # Identify potentially relevant content
+    relevant_content = ""
+    
+    # Check for program-specific keywords
+    if any(keyword in query_lower for keyword in ["changemaker", "service", "costa rica", "dominican", "peru"]):
+        for key, content in content_dict.items():
+            if "changemaker" in key.lower():
+                relevant_content += f"\n{content}\n"
+    
+    if any(keyword in query_lower for keyword in ["pathfinder", "europe", "england", "france"]):
+        for key, content in content_dict.items():
+            if "pathfinder" in key.lower():
+                relevant_content += f"\n{content}\n"
+    
+    if any(keyword in query_lower for keyword in ["voyager", "australia", "thailand", "japan"]):
+        for key, content in content_dict.items():
+            if "voyager" in key.lower():
+                relevant_content += f"\n{content}\n"
+    
+    if any(keyword in query_lower for keyword in ["year", "full year", "academic year", "23-week"]):
+        for key, content in content_dict.items():
+            if "year" in key.lower() and "voyager" not in key.lower():
+                relevant_content += f"\n{content}\n"
+    
+    # If no specific content found, use a combination of key files
+    if not relevant_content:
+        # Get up to 3 random content files as samples
+        sample_keys = list(content_dict.keys())[:3]
+        for key in sample_keys:
+            relevant_content += f"\n{content_dict[key]}\n"
+    
+    # Limit content length to avoid token issues
+    if len(relevant_content) > 15000:
+        relevant_content = relevant_content[:15000] + "..."
+    
+    return relevant_content
+
 # Check for OpenAI API key
 if "OPENAI_API_KEY" not in os.environ and "openai_api_key" not in st.session_state:
     st.error("⚠️ OpenAI API key not found. Please enter your API key below:")
@@ -113,12 +196,20 @@ else:
 # Initialize OpenAI client
 client = OpenAI(api_key=api_key)
 
+# Initialize content (only once at startup)
+if 'program_content' not in st.session_state:
+    st.session_state.program_content = load_content_files()
+    st.session_state.content_loaded = True
+
 def get_chatbot_response(query):
     """Get response from OpenAI using program information"""
     try:
+        # Get relevant content for the query
+        program_info = get_relevant_content(query, st.session_state.program_content)
+        
         # Format the prompt
         prompt = SYSTEM_INSTRUCTIONS.format(
-            program_info=PROGRAM_INFO,
+            program_info=program_info,
             question=query
         )
         
@@ -165,6 +256,14 @@ def main():
     gap year or semester program. Feel free to ask me any questions about your program,
     travel preparations, or what to expect during your EF Gap Year experience.
     """)
+    
+    # Display status of content loading
+    if st.session_state.get('content_loaded'):
+        if "fallback" in st.session_state.program_content:
+            st.info("Using basic program information. For more detailed responses, add content files to the 'ef_content' folder.")
+        else:
+            num_files = len(st.session_state.program_content)
+            st.success(f"Loaded {num_files} content files successfully!")
     
     # Initialize session state for messages
     if 'messages' not in st.session_state:
