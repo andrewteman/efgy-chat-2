@@ -5,7 +5,7 @@ from openai import OpenAI
 
 # Page configuration
 st.set_page_config(
-    page_title="EF Gap Year Pre-Departure Assistant 🤖",
+    page_title="EF Gap Year Assistant",
     page_icon="🌎",
     layout="centered"
 )
@@ -246,7 +246,7 @@ def display_messages():
         else:
             st.markdown(f"""
             <div class="chat-message bot">
-                <img class="avatar" src="https://scontent-bos5-1.xx.fbcdn.net/v/t39.30808-1/297336821_1577911329293738_3524076058854264022_n.jpg">
+                <img class="avatar" src="https://a.storyblok.com/f/152976/x/807eb80d2a/favicon-removebg-preview.png">
                 <div class="message">{message["content"]}</div>
             </div>
             """, unsafe_allow_html=True)
